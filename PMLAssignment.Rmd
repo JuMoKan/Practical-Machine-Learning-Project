@@ -1,0 +1,255 @@
+---
+title: "PML-Assignment"
+author: "JuliaKannenberg"
+date: "Friday, November 21, 2014"
+output: html_document
+---
+[/ /]: (comment)
+
+# Practical Machine Learning - Assignment
+
+This document is structured as follows: 
+* Introduction and Goals 
+* Getting started: Understanding and Cleaning the data  
+* Split data into training and test set
+* Building and evaluating the model on the training set
+* Evaluating the model on the test set
+* Prediction and Submission
+
+
+# Introduction and Goals 
+
+The training data for this project are available here: https://d396qusza40orc.cloudfront.net/predmachlearn/pml-training.csv.   
+The test data are available here: https://d396qusza40orc.cloudfront.net/predmachlearn/pml-testing.csv.    
+The data for this project come from this source: http://groupware.les.inf.puc-rio.br/har. 
+
+The goal of this project is to predict the manner,in which they did the exercise. This is the "classe" variable in the training set. You may use any of the other variables to predict with. You should create a report describing how you built your model, how you used cross validation, what you think the expected out of sample error is, and why you made the choices you did. You will also use your prediction model to predict 20 different test cases.
+
+
+# Getting started: Understanding and Cleaning the data  
+
+I downloaded the two datasets, saved them on my Desktop and loaded them into the Workspace.  
+
+```{r}
+#download.file("https://d396qusza40orc.cloudfront.net/predmachlearn/pml-training.csv", "C:/Users/User/Desktop/pml-training.csv"")
+
+#download.file("https://d396qusza40orc.cloudfront.net/predmachlearn/pml-testing.csv", "C:/Users/User/Desktop/pml-testing.csv")
+
+data <- read.csv("C:/Users/User/Desktop/pml-training.csv") 
+```
+
+In the .csv file the missing values are either coded as "NA" values or empty cells.    
+We read the data another time with the right settings and then start our data preprocessing by looking at the variables. 
+
+```{r, results="hide"}
+data <- read.csv("C:/Users/User/Desktop/pml-training.csv", header=TRUE, na.strings=c("NA","")) 
+colnames(data)
+```
+
+Variables:    
+- Variables 1 to 7 are the user_name and timestamp and window variables    
+- Variables 8 roll_belt to 159 magnet_forearm_z are the predictor variables   
+- Variable 160 classe is the outcome variable   
+
+I exclude the first seven variables (X, user_name, raw_timestamp_part_1, raw_timestamp_part_2, cvtd_timestamp, new_window, num_window) from further analysis, because they won't be suitable for modelling .
+```{r}
+Variables_not_predictive <- colnames(data)[1:7]
+```
+
+Let us have a closer look at the predictor variables:  
+```{r}
+belt <- grep("_belt",colnames(data), perl=TRUE, value=FALSE)
+arm <- grep("_arm",colnames(data), perl=TRUE, value=FALSE)
+dumbbell <- grep("_dumbbell",colnames(data), perl=TRUE, value=FALSE)
+forearm <- grep("_forearm",colnames(data), perl=TRUE, value=FALSE)
+
+predictor_variables <- data.frame(
+           belt=sort(colnames(data)[belt]),
+           arm=sort(colnames(data)[arm]),
+           dumbbell=sort(colnames(data)[dumbbell]),
+           forearm=sort(colnames(data)[forearm]))
+options(width=95)
+head(predictor_variables)
+```
+
+We can see, that the dataset contains the same 38 measurements for the four regions belt, arm, dumbbell and forearm (I only display the first 6 here to make it more easy for the reader). Some of the variables contain values for point-in-time measures (like the roll, pitch yaw variables) and some of the variables summarize the previous point-in-time measures (like the avg_, kurtosis_, skewness_, min_ etc. variables ). Those "summary" variables have a very high number of missing values (they have valid values only when new.window=TRUE, as they kind of summarize the previous measurements) and thus can be excluded from further analysis.
+
+```{r}
+Perc_Missing_Values <- data.frame(Variable=colnames(data), 
+                                  PCT_Non_Missing=rep(NA,ncol(data)),
+                                  PCT_Missing=rep(NA,ncol(data)))
+
+for (i in 1:ncol(data)){
+  Vector <- as.numeric(prop.table(table(is.na(data[,i]))))
+  for (k in 1:length(Vector)){
+    l <- k+1
+    Perc_Missing_Values[i,l] <- Vector[k]
+  }
+}
+
+Index_Var_high_missing <- which(Perc_Missing_Values$PCT_Missing>0.95)
+Variables_high_missing <- Perc_Missing_Values$Variable[Index_Var_high_missing]
+Perc_Missing_Values_1to10 <- Perc_Missing_Values[which(Perc_Missing_Values$PCT_Missing>0.95),]
+Perc_Missing_Values_1to10[1:10,] 
+length(Variables_high_missing)
+```
+
+This leaves us with a cleaned dataset of 19622 observations and 53 variables (52 predictor variables and the classe outcome variable).
+
+```{r}
+Var_to_exclude <- c(1:7,Index_Var_high_missing)
+data <- data[,-Var_to_exclude]
+dim(data)
+```
+
+
+# Split data into training and test set
+
+Next we split the data into training and test set. 
+I choosed a 70-30 split.
+```{r}
+library(caret)
+set.seed(1234)
+inTrain <- createDataPartition(y=data$classe, p=0.7, list=FALSE)
+training <- data[inTrain,]
+testing <- data[-inTrain,]
+```
+
+# Building the model on the training set
+
+To start the model building process I have a look at the pairwise correlations between the predictors. If two predictors have a very high pairwise correlation, one of them may be excluded. If many predictors have high corrlations among them a Princial Compenent Analysis is suitable to further reduce the dimensionality of the dataset.
+
+```{r, results="hide"}
+CorTable <- cor(training[,-53])
+as.matrix(CorTable)
+abs(CorTable)
+CorTable[lower.tri(CorTable, diag=TRUE)] <- NA
+
+
+for (i in 1:nrow(CorTable)){
+  CorTable[i,] <- abs(CorTable[i,])
+}
+  
+CorFun <- function(lower,upper){
+  
+  Cor_Indices <- which(CorTable>lower & CorTable<=upper, arr.ind=TRUE)
+  
+  CorrVar <- data.frame(Var1=rep(NA,nrow(Cor_Indices)),
+                        Var2=rep(NA,nrow(Cor_Indices)),
+                        Corr=rep(NA,nrow(Cor_Indices)))
+  
+  for (i in 1:nrow(Cor_Indices)){
+    CorrVar[i,1] <- rownames(CorTable)[Cor_Indices[i,1]]
+    CorrVar[i,2] <- colnames(CorTable)[Cor_Indices[i,2]]
+    CorrVar[i,3] <- CorTable[Cor_Indices[i,1],Cor_Indices[i,2]]
+  }
+
+return(CorrVar)
+}
+
+
+Num_Corr_Table <- data.frame(
+  Num_Corr_08to1=nrow(CorFun(lower=0.8, upper=1)),
+  Num_Corr_06to08=nrow(CorFun(lower=0.6,upper=0.8)),
+  Num_Corr_04to06=nrow(CorFun(lower=0.4,upper=0.6)),
+  Num_Corr_02to04=nrow(CorFun(lower=0.2,upper=0.4)),
+  Num_Corr_00to02=nrow(CorFun(lower=0.0,upper=0.2))
+)
+
+
+Num_Corr_Table_Summary  <- data.frame( 
+  Number_Corr= t(Num_Corr_Table), 
+  Relative_Frequency=prop.table(t(Num_Corr_Table)))
+```
+
+```{r}
+Num_Corr_Table_Summary
+```
+
+
+Of the total 52*(52-1)/2=1326 possible pairs of predictors, 68.25% have a low pairwise correlation (lower than 0.2), 21.04% have a medium correlation (between 0.2 and 0.4) and 10.71% (0.01432881+ 0.02790347+ 0.06485671=0.107089) have a correlation higher than 0.6. 
+
+Based on these findings, I perform a Principal Component Analysis.
+```{r}
+PCA_85 <- preProcess(training[,-53], method = "pca", thresh = 0.85)
+PCA_90 <- preProcess(training[,-53], method = "pca", thresh = 0.90)
+PCA_95 <- preProcess(training[,-53], method = "pca", thresh = 0.95)
+
+PCA_85$numComp 
+PCA_90$numComp 
+PCA_95$numComp 
+```
+
+With 15 PCs I can retain 85% of the original variance, with 18 PCs I can retain 90% of the original variance. To retain 95% of the original variance I need 25 PCs. 
+I hence choose the following steps for the model building:
+- preprocess the training data with PCA (treshold of 90%)
+- run Random Forest 
+- check the accuracy on the training data
+
+If the accuracy on the training data is high, I apply the same steps to the 30 percent testing data
+
+Here is the code which preprocesses the training data with PCA with a 90% retained variance cutoff and then applies a random forest on the preprocessed data. I choose to use the randomForest function directly. This function computes defult ntree=500 trees (which seems enough in a dataset with 18 PCs/variables) and thus runs much faster than the train(...,..., method="rf") function in caret. 
+
+```{r}
+preProc <- preProcess(training[,-53], method = "pca", thresh = 0.90)
+trainPC <- predict(preProc, training[,-53])
+library(randomForest)
+modelFit <- randomForest(training$classe ~ ., data=trainPC)
+```
+
+With those settings I obtained a perfect classification in the 70%-training data (Error of 0, Accuracy of 1). I expect the out-of-sample error on the 30%-test data to be slightly higher than 0 (as overfitting occurs in training-test situations), but still to be very low.
+Let me also briefly outline my thoughs on cross-validation as the assignment excercise asks specifially for that ("how you used cross validation"): RandomForests have an in-built cross-validation: They bootstrap samples and at each split bootstrap variables in order to grow multiple trees. 
+
+```{r}
+confusionMatrix(training$classe, predict(modelFit,trainPC))$table
+confusionMatrix(training$classe, predict(modelFit,trainPC))$overall
+```
+
+# Accuray on the Test Set: 
+
+I computed the accuracy on the 30%-testing set as follows: 
+```{r}
+testPC <- predict(preProc,testing[,-53])
+confusionMatrix(testing$classe, predict(modelFit,testPC))$overall
+```
+
+I obtained a 97.43% accuracy on the testing set (with a 95% Confidence Interval of 96.99741% to 97.82297%). 
+With those results I feel confident to  predict the 20 given cases. 
+
+# Prediction and Submission
+
+To predict the 20 cases I have to apply the same data-cleaning steps:
+```{r}
+data_to_predict <- read.csv("C:/Users/User/Desktop/pml-testing.csv", header=TRUE, na.strings=c("NA","")) 
+Var_to_exclude <- c(1:7,Index_Var_high_missing)
+data_to_predict <- data_to_predict[,-Var_to_exclude]
+```
+
+Then I preprocess the prediction data with the preProc Object of the model fitting process on the training set. I exclude column 53 which contains the problem_id. I predict the 20 cases with the modelFit object I build on the training set.
+
+```{r}
+predictPC <- predict(preProc, data_to_predict[, -53])
+pred_final <- predict(modelFit, predictPC)
+```
+
+I obtain the following predictions: 
+```{r}
+pred_final
+```
+
+and submit them via: 
+
+```{r}
+answers = pred_final
+
+pml_write_files = function(x){
+  n = length(x)
+  for(i in 1:n){
+    filename = paste0("problem_id_",i,".txt")
+    write.table(x[i],file=filename,quote=FALSE,row.names=FALSE,col.names=FALSE)
+  }
+}
+
+pml_write_files(answers)
+```
+
