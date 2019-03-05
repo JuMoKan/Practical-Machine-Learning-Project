@@ -1,1 +1,8 @@
-With this markup you can obtain *simple emhpasis* (usually rendered in italic text), **strong emphasis** (usually rendered in bold text), `source code` text (usually rendered in monospaced text), or ~~strikethrough~~ text (usually rendered with a line through text).
+
+
+## Support Vector Machines 
+* Applied Machine Learning in Python (University of Michigan, Coursera)
+* https://www.coursera.org/learn/python-machine-learning/home/welcome
+
+* Machine Learning (Standford Andrew Ng, Week 7)
+* https://www.coursera.org/learn/machine-learning
